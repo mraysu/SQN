@@ -46,15 +46,15 @@ class ConfignuScenes:
     saving_path = None
 
 
-class ConfigSemanticKITTI:
+class ConfigSemanticKITTI: # One taken into account for TLS dataset
     k_n = 16  # KNN
     num_layers = 4  # Number of layers
     num_points = 4096 * 11  # Number of input points
-    num_classes = 19  # Number of valid classes
+    num_classes = 5  # Number of valid classes
     sub_grid_size = 0.06  # preprocess_parameter
 
-    batch_size = 6  # batch_size during training
-    val_batch_size = 18  # batch_size during validation and test
+    batch_size = 2  # batch_size during training 
+    val_batch_size = 2  # batch_size during validation and test
     train_steps = 500  # Number of steps per epochs
     val_steps = 100  # Number of validation steps per epoch
 
@@ -67,9 +67,9 @@ class ConfigSemanticKITTI:
     learning_rate = 1e-2  # initial learning rate
     lr_decays = {i: 0.95 for i in range(0, 500)}  # decay rate of learning rate
 
-    train_sum_dir = 'train_log_KITTI'
+    train_sum_dir = '/root/dataset/results/train_log_TLS'
     saving = True
-    saving_path = None
+    saving_path = '/root/dataset/results/Log_2023-07-28_S3DIS_2/'
 
 
 class ConfigS3DIS:
@@ -79,11 +79,40 @@ class ConfigS3DIS:
     num_classes = 13  # Number of valid classes
     sub_grid_size = 0.04  # preprocess_parameter
 
-    batch_size = 6  # batch_size during training
-    val_batch_size = 12  # batch_size during validation and test
+    batch_size = 1  # batch_size during training
+    val_batch_size = 1  # batch_size during validation and test
     train_steps = 500  # Number of steps per epochs
     val_steps = 100  # Number of validation steps per epoch
 
+    sub_sampling_ratio = [4, 4, 4, 4, 2]  # sampling ratio of random sampling at each layer
+    d_out = [16, 64, 128, 256, 512]  # feature dimension
+
+    noise_init = 3.5  # noise initial parameter
+    max_epoch = 93  # maximum epoch during training
+    learning_rate = 1e-2  # initial learning rate
+    lr_decays = {i: 0.95 for i in range(0, 500)}  # decay rate of learning rate
+
+    train_sum_dir = './vol/results/train_log_S3DIS'
+    saving = True
+    # saving_path = './vol/results/Log_2023-06-25_S3DIS/'
+    saving_path = None
+
+class ConfigTLS:
+    k_n = 16  # KNN
+    #num_layers = 7  # Number of layers
+    num_layers = 5  # Number of layers
+    num_points = 40960  # Number of input points
+    num_classes = 5  # Number of valid classes
+    #sub_grid_size = 0.08  # preprocess_parameter
+    sub_grid_size = 0.04  # preprocess_parameter
+
+    batch_size = 2  # batch_size during training
+    val_batch_size = 1  # batch_size during validation and test
+    #train_steps = 700  # Number of steps per epochs
+    train_steps = 500  # Number of steps per epochs
+    val_steps = 50  # Number of validation steps per epoch
+
+    #sub_sampling_ratio = [6, 6, 6, 6, 3]  # sampling ratio of random sampling at each layer
     sub_sampling_ratio = [4, 4, 4, 4, 2]  # sampling ratio of random sampling at each layer
     d_out = [16, 64, 128, 256, 512]  # feature dimension
 
@@ -92,9 +121,10 @@ class ConfigS3DIS:
     learning_rate = 1e-2  # initial learning rate
     lr_decays = {i: 0.95 for i in range(0, 500)}  # decay rate of learning rate
 
-    train_sum_dir = 'train_log_S3DIS'
+    train_sum_dir = './vol/results/train_log_TLS'
     saving = True
-    saving_path = None
+    saving_path = './vol/results/Log_2023-07-28_S3DIS_2/'
+    # saving_path = None
 
 
 class ConfigSemantic3D:
@@ -389,11 +419,13 @@ class DataProcessing:
         scan = np.fromfile(pc_path, dtype=np.float32)
         scan = scan.reshape((-1, 4))
         points = scan[:, 0:3]  # get xyz
+        points = points[8:]
         return points
 
     @staticmethod
     def load_label_kitti(label_path, remap_lut):
-        label = np.fromfile(label_path, dtype=np.uint32)
+        label = np.load(label_path)
+        #print("LABEL", label)
         label = label.reshape((-1))
         sem_label = label & 0xFFFF  # semantic label in lower half
         inst_label = label >> 16  # instance id in upper half
@@ -403,6 +435,8 @@ class DataProcessing:
 
     @staticmethod
     def get_num_class_from_label(labels, total_class):
+        #print(labels)
+        #print(total_class)
         num_pts_per_class = np.zeros(total_class, dtype=np.int32)
         # original class distribution
         val_list, counts = np.unique(labels, return_counts=True)
@@ -424,20 +458,25 @@ class DataProcessing:
 
     @staticmethod
     def get_file_list(dataset_path, test_scan_num, gen_pesudo=None):
+        print(dataset_path)
+        #dataset_path = join(dataset_path, 'sequences')
         seq_list = np.sort(os.listdir(dataset_path))
+        print(seq_list)
         train_file_list = []
         test_file_list = []
         val_file_list = []
         for seq_id in seq_list:
             seq_path = join(dataset_path, seq_id)
+            print(seq_path)
             pc_path = join(seq_path, 'velodyne')
-            if seq_id == '08':
+            print(pc_path)
+            if seq_id == '02':
                 val_file_list.append([join(pc_path, f) for f in np.sort(os.listdir(pc_path))])
                 if seq_id == test_scan_num:
                     test_file_list.append([join(pc_path, f) for f in np.sort(os.listdir(pc_path))])
-            elif (int(seq_id) >= 11 and seq_id == test_scan_num) or (gen_pesudo and seq_id == test_scan_num):
+            elif (seq_id == '01') or (gen_pesudo and seq_id == test_scan_num):
                 test_file_list.append([join(pc_path, f) for f in np.sort(os.listdir(pc_path))])
-            elif seq_id in ['00', '01', '02', '03', '04', '05', '06', '07', '09', '10']:
+            elif seq_id in ['00']:
                 train_file_list.append([join(pc_path, f) for f in np.sort(os.listdir(pc_path))])
 
         train_file_list = np.concatenate(train_file_list, axis=0)
@@ -536,6 +575,8 @@ class DataProcessing:
         elif labels is None:
             return cpp_subsampling.compute(points, features=features, sampleDl=grid_size, verbose=verbose)
         elif features is None:
+            print(points.shape)
+            print(labels.shape)
             return cpp_subsampling.compute(points, classes=labels, sampleDl=grid_size, verbose=verbose)
         else:
             return cpp_subsampling.compute(points, features=features, classes=labels, sampleDl=grid_size,
@@ -571,11 +612,17 @@ class DataProcessing:
     @staticmethod
     def get_class_weights(num_per_class, name='sqrt'):
         # # pre-calculate the number of points in each category
+        print(num_per_class)
+        print(float(sum(num_per_class)))
         frequency = num_per_class / float(sum(num_per_class))
-        if name == 'sqrt' or name == 'lovas':
+        print(frequency)
+        if name == 'sqrt' or name == 'lovas':                
             ce_label_weight = 1 / np.sqrt(frequency)
+            ce_label_weight[ce_label_weight == float('inf')] = 0
+            print(ce_label_weight)
         elif name == 'wce':
             ce_label_weight = 1 / (frequency + 0.02)
+            print(ce_label_weight)
         else:
             raise ValueError('Only support sqrt and wce')
         return np.expand_dims(ce_label_weight, axis=0)
@@ -595,7 +642,7 @@ class Plot:
     def draw_pc(pc_xyzrgb):
         # only visualize a number of points to save memory
         num_pts = np.shape(pc_xyzrgb)[0]
-        pc = o3d.geometry.PointCloud()
+        pc = o3d.t.geometry.PointCloud()
         pc.points = o3d.utility.Vector3dVector(pc_xyzrgb[:, 0:3])
         if pc_xyzrgb.shape[1] == 3:
             o3d.visualization.draw_geometries([pc])
@@ -606,11 +653,13 @@ class Plot:
             pc.colors = o3d.utility.Vector3dVector(pc_xyzrgb[:, 3:6])
 
         o3d.geometry.PointCloud.estimate_normals(pc)
-        o3d.visualization.draw_geometries([pc], width=1000, height=1000)
+        #o3d.visualization.draw_geometries([pc], width=1000, height=1000)
+        o3d.io.write_point_cloud("Visualization.ply", pc)
         return 0
 
     @staticmethod
     def draw_pc_sem_ins(pc_xyz, pc_sem_ins, dataset=None):
+        plot_colors = None
         if dataset is None:
             ins_colors = Plot.random_colors(len(np.unique(pc_sem_ins)) + 1, seed=1)
         else:

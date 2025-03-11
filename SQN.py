@@ -14,6 +14,10 @@ ROOT_DIR = BASE_DIR
 sys.path.append(os.path.join(ROOT_DIR, 'tf_ops/3d_interpolation'))
 from tf_interpolate import three_nn, three_interpolate
 
+import pandas as pd
+import seaborn as sn
+import matplotlib.pyplot as plt
+
 
 def log_out(out_str, f_out):
     f_out.write(out_str + '\n')
@@ -22,18 +26,21 @@ def log_out(out_str, f_out):
 
 
 class Network:
-    def __init__(self, dataset, config, retrain=False):
+    def __init__(self, dataset, config, retrain=False, epoch=0, restore_snap=None, transfer=False):
         flat_inputs = dataset.flat_inputs
 
         self.config = config
+        self.classes = self.config.num_classes
         # Path of the result folder
         if self.config.saving:
             if self.config.saving_path is None:
-                self.saving_path = time.strftime('results/Log_%Y-%m-%d', time.gmtime())
+                self.saving_path = time.strftime('vol/results/Log_%Y-%m-%d', time.gmtime())
                 self.saving_path = self.saving_path + '_' + dataset.name
             else:
                 self.saving_path = self.config.saving_path
             makedirs(self.saving_path) if not exists(self.saving_path) else None
+        else:
+            self.saving_path = False
 
         with tf.variable_scope('inputs'):
             self.inputs = dict()
@@ -52,19 +59,24 @@ class Network:
 
             self.labels = self.inputs['labels']
             self.is_training = tf.placeholder(tf.bool, shape=())
+            #self.is_not_transfering = tf.placeholder(tf.bool, shape=())
             self.training_step = 1
-            self.training_epoch = 0
+            self.training_epoch = int(epoch)
             self.correct_prediction = 0
             self.accuracy = 0
             self.mIou_list = [0]
-            if dataset.name == 'S3DIS' or dataset.name == 'Semantic3D':
+            if dataset.name == 'S3DIS' or dataset.name == 'Semantic3D' or dataset.name == 'TLS_scans':
                 self.loss_type = 'wce'  # sqrt, lovas
             else:
                 self.loss_type = 'sqrt'  # wce, lovas
             self.class_weights = DP.get_class_weights(dataset.num_per_class, self.loss_type)
-            self.Log_file = open('log_train_' + dataset.name + '_' + str(dataset.val_split) + '.txt', 'a')
+            if self.saving_path:
+                self.Log_file = open(join(self.saving_path, 'log_train_' + dataset.name + '_' + str(dataset.val_split) + '.txt'), 'a')
+            else:
+                self.Log_file = open('log_train_' + dataset.name + '_' + str(dataset.val_split) + '.txt', 'a')
 
         with tf.variable_scope('layers'):
+            #self.logits = self.inference(self.inputs, self.is_training, self.is_not_transfering)
             self.logits = self.inference(self.inputs, self.is_training)
 
         with tf.variable_scope('loss'):
@@ -112,6 +124,17 @@ class Network:
             tf.summary.scalar('accuracy', self.accuracy)
 
         my_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES)
+        if transfer: # Take away the last classification layers
+            my_vars.pop()
+            my_vars.pop()
+            my_vars.pop()
+            my_vars.pop() 
+            my_vars.pop(258)
+            my_vars.pop(257)
+        """for i, var in enumerate(my_vars):
+            print(str(i), ": ", str(var))
+            insert = input()"""
+        #a = 1/0
         self.saver = tf.train.Saver(my_vars, max_to_keep=1)
         c_proto = tf.ConfigProto()
         c_proto.gpu_options.allow_growth = True
@@ -119,7 +142,31 @@ class Network:
         self.merged = tf.summary.merge_all()
         self.train_writer = tf.summary.FileWriter(config.train_sum_dir, self.sess.graph)
         self.sess.run(tf.global_variables_initializer())
-
+        op = self.learning_rate.assign(config.learning_rate)
+        self.sess.run(op)
+        if restore_snap != None:
+            self.saver.restore(self.sess, restore_snap["snap"])
+            print("Model restored from " + restore_snap["snap"])
+            self.training_step = int(restore_snap["step"])
+            my_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES)
+            self.saver = tf.train.Saver(my_vars, max_to_keep=1)
+            #self.sess.run(tf.global_variables_initializer())
+            #self.classes = 5
+            """self.mIou_list = []
+            with open(join(self.saving_path, 'm_iou.txt'), 'r') as f:
+                for line in f:
+                    self.mIou_list.append(float(line.strip('\n')))
+                print(self.mIou_list)
+            lr = 0
+            with open(join(self.saving_path, 'learning_rate.txt'), 'r') as f:
+                lr = float(f.readlines()[-1])
+            op = self.learning_rate.assign(lr)
+            self.sess.run(op)
+            with open(join(self.saving_path, 'learning_rate.txt'), 'a') as f:
+                f.write("{}\n".format(self.learning_rate.eval(session=self.sess)))
+            print('Learning rate: {}'.format(self.learning_rate.eval(session=self.sess)))"""
+            
+    #def inference(self, inputs, is_training, is_not_transfering):
     def inference(self, inputs, is_training):
 
         d_out = self.config.d_out
@@ -127,15 +174,15 @@ class Network:
         batch_anno_xyz = inputs['batch_xyz_anno']  # annotated batch xyz
 
         with tf.device('/cpu:0'):
-            feature = tf.cond(is_training,
+            feature = tf.cond(is_training, 
                               lambda: tf.concat([feature, self.data_augment(feature)], axis=0),
                               lambda: feature)
-            batch_anno_xyz = tf.cond(is_training,
+            batch_anno_xyz = tf.cond(is_training, #is_training
                                      lambda: tf.concat([batch_anno_xyz, batch_anno_xyz], axis=0),
                                      lambda: batch_anno_xyz)
 
         feature = tf.layers.dense(feature, 8, activation=None, name='fc0')
-        feature = tf.nn.leaky_relu(tf.layers.batch_normalization(feature, -1, 0.99, 1e-6, training=is_training))
+        feature = tf.nn.leaky_relu(tf.layers.batch_normalization(feature, -1, 0.99, 1e-6, training=True)) #is_training
         feature = tf.expand_dims(feature, axis=2)
 
         # ###########################Encoder############################
@@ -146,7 +193,7 @@ class Network:
                                                          inputs['sub_idx'][i])
 
             f_encoder_i = self.dilated_res_block(feature, xyz, neigh_idx, d_out[i],
-                                                 'Encoder_layer_' + str(i), is_training)
+                                                 'Encoder_layer_' + str(i), True) #is_training
             f_sampled_i = self.random_sample(f_encoder_i, sub_idx)
             feature = f_sampled_i
             if i == 0:
@@ -168,22 +215,28 @@ class Network:
         interpolated_points = tf.concat(f_interp, axis=-1)
         interpolated_points = tf.expand_dims(interpolated_points, axis=2)
         interpolated_points = tf_util.conv2d(interpolated_points, 256, [1, 1], 'if_1', [1, 1], 'VALID', True,
-                                             is_training)
+                                             True) #is_training
         interpolated_points = tf_util.conv2d(interpolated_points, 128, [1, 1], 'if_2', [1, 1], 'VALID', True,
-                                             is_training)
+                                             True) #is_training
         interpolated_points = tf_util.conv2d(interpolated_points, 64, [1, 1], 'if_3', [1, 1], 'VALID', True,
-                                             is_training)
+                                             True) #is_training
 
-        f_layer_fc1 = tf_util.conv2d(interpolated_points, 64, [1, 1], 'fc1', [1, 1], 'VALID', True, is_training)
-        f_layer_fc2 = tf_util.conv2d(f_layer_fc1, 32, [1, 1], 'fc2', [1, 1], 'VALID', True, is_training)
-        f_layer_fc3 = tf_util.conv2d(f_layer_fc2, self.config.num_classes, [1, 1], 'fc', [1, 1], 'VALID', False,
-                                     is_training, activation_fn=None)
+        f_layer_fc1 = tf_util.conv2d(interpolated_points, 64, [1, 1], 'fc1', [1, 1], 'VALID', True, True) #is_training
+        f_layer_fc2 = tf_util.conv2d(f_layer_fc1, 32, [1, 1], 'fc2', [1, 1], 'VALID', True, True) #is_training
+        f_layer_fc3 = tf_util.conv2d(f_layer_fc2, self.classes, [1, 1], 'fc', [1, 1], 'VALID', False,
+                                     is_training, activation_fn=None) #is_training
         f_out = tf.squeeze(f_layer_fc3, [2])
         return f_out
 
+
+    #def train(self, dataset, not_transfer=True):
     def train(self, dataset):
+        print("Classes: ", self.classes)
+        print("Evaluate")
+        self.evaluate(dataset, -1)
         log_out('****EPOCH {}****'.format(self.training_epoch), self.Log_file)
         self.sess.run(dataset.train_init_op)
+        log_out('Session Started', self.Log_file)
         while self.training_epoch < self.config.max_epoch:
             t_start = time.time()
             try:
@@ -194,24 +247,28 @@ class Network:
                        self.logits,
                        self.labels,
                        self.accuracy]
+                #_, _, summary, l_out, probs, labels, acc = self.sess.run(ops, {self.is_training: True, self.not_transfer: not_transfer})
                 _, _, summary, l_out, probs, labels, acc = self.sess.run(ops, {self.is_training: True})
                 self.train_writer.add_summary(summary, self.training_step)
                 t_end = time.time()
-                if self.training_step % 50 == 0:
+                if self.training_step % 1 == 0:
                     message = 'Step {:08d} L_out={:5.3f} Acc={:4.2f} ''---{:8.2f} ms/batch'
                     log_out(message.format(self.training_step, l_out, acc, 1000 * (t_end - t_start)), self.Log_file)
                 self.training_step += 1
 
             except tf.errors.OutOfRangeError:
 
-                if dataset.use_val and self.training_epoch % 2 == 0:  # and self.training_epoch > 20
-                    m_iou = self.evaluate(dataset)
+                if dataset.use_val and self.training_epoch % 1 == 0:  # and self.training_epoch > 20
+                    m_iou = self.evaluate(dataset, self.training_epoch)
                     if m_iou > np.max(self.mIou_list):
                         # Save the best model
                         snapshot_directory = join(self.saving_path, 'snapshots')
                         makedirs(snapshot_directory) if not exists(snapshot_directory) else None
+
                         self.saver.save(self.sess, snapshot_directory + '/snap', global_step=self.training_step)
                     self.mIou_list.append(m_iou)
+                    with open(join(self.saving_path, 'm_iou.txt'), 'a') as f:
+                        f.write('{}\n'.format(m_iou))
                     log_out('Best m_IoU of {} is: {:5.3f}'.format(dataset.name, max(self.mIou_list)), self.Log_file)
                 else:
                     snapshot_directory = join(self.saving_path, 'snapshots')
@@ -224,6 +281,8 @@ class Network:
                 op = self.learning_rate.assign(tf.multiply(self.learning_rate,
                                                            self.config.lr_decays[self.training_epoch]))
                 self.sess.run(op)
+                with open(join(self.saving_path, 'learning_rate.txt'), 'a') as f:
+                    f.write("{}\n".format(self.learning_rate.eval(session=self.sess)))
                 log_out('****EPOCH {}****'.format(self.training_epoch), self.Log_file)
 
             except tf.errors.InvalidArgumentError as e:
@@ -287,9 +346,11 @@ class Network:
         data_aug = tf.multiply(data_aug, att_scores)
         return data_aug
 
-    def evaluate(self, dataset):
+    def evaluate(self, dataset, epoch):
 
         # Initialise iterator with validation data
+        #init = tf.global_variables_initializer()
+        #self.sess.run(init, {self.is_training: False, self.is_not_transfering: False})
         self.sess.run(dataset.val_init_op)
 
         gt_classes = [0 for _ in range(self.config.num_classes)]
@@ -297,13 +358,15 @@ class Network:
         true_positive_classes = [0 for _ in range(self.config.num_classes)]
         val_total_correct = 0
         val_total_seen = 0
+        confusion_matrix_total = np.zeros((self.config.num_classes, self.config.num_classes)) 
 
         for step_id in range(self.config.val_steps):
-            if step_id % 50 == 0:
+            if step_id % 10 == 0:
                 print(str(step_id) + ' / ' + str(self.config.val_steps))
             try:
                 ops = (self.prob_logits, self.labels, self.accuracy)
-                stacked_prob, labels, acc = self.sess.run(ops, {self.is_training: False})
+                #stacked_prob, labels, acc = self.sess.run(ops, {self.is_training: False,  self.is_not_transfering: False})
+                stacked_prob, labels, acc = self.sess.run(ops, {self.is_training: True})
                 pred = np.argmax(stacked_prob, 1)
                 if not self.config.ignored_label_inds:
                     pred_valid = pred
@@ -319,6 +382,7 @@ class Network:
                 val_total_seen += len(labels_valid)
 
                 conf_matrix = confusion_matrix(labels_valid, pred_valid, np.arange(0, self.config.num_classes, 1))
+                confusion_matrix_total += conf_matrix
                 gt_classes += np.sum(conf_matrix, axis=1)
                 positive_classes += np.sum(conf_matrix, axis=0)
                 true_positive_classes += np.diagonal(conf_matrix)
@@ -326,6 +390,19 @@ class Network:
             except tf.errors.OutOfRangeError:
                 break
 
+        confusion_matrix_total = confusion_matrix_total // self.config.val_steps
+
+        classes = ['alive', '1h', '10h', '100h', '1000h']
+
+        df_cfm = pd.DataFrame(confusion_matrix_total, index = classes, columns = classes)
+        plt.figure(figsize = (10,7))
+        plt.title("Confusion Matrix for Epoch {epoch_d}".format(epoch_d=epoch))
+        plt.xlabel("Predicted Label")
+        plt.ylabel("True Label")
+        cfm_plot = sn.heatmap(df_cfm, annot=True)
+        cfm_plot.figure.savefig(self.config.saving_path + "confusion_matrix/epoch" + str(epoch) + ".png")
+        plt.clf()
+        
         iou_list = []
         for n in range(0, self.config.num_classes, 1):
             iou = true_positive_classes[n] / float(gt_classes[n] + positive_classes[n] - true_positive_classes[n] + 0.1)
@@ -348,7 +425,9 @@ class Network:
     def get_loss(self, logits, labels, pre_cal_weights):
         # calculate the weighted cross entropy according to the inverse frequency
         class_weights = tf.convert_to_tensor(pre_cal_weights, dtype=tf.float32)
+        print("GET_LOSS", class_weights.shape)
         one_hot_labels = tf.one_hot(labels, depth=self.config.num_classes)
+        print("ONE_HOT", one_hot_labels.shape)
         weights = tf.reduce_sum(class_weights * one_hot_labels, axis=1)
         unweighted_losses = tf.nn.softmax_cross_entropy_with_logits_v2(logits=logits, labels=one_hot_labels)
         weighted_losses = unweighted_losses * weights
